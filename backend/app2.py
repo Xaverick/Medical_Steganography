@@ -9,79 +9,46 @@ import wave
 import cloudinary
 import cloudinary.uploader
 from flask_cors import CORS
-import random
-import string
+from dotenv import load_dotenv
 
-
+load_dotenv()
 # Flask App Configuration
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 
 # MongoDB Configuration
-client = MongoClient("mongodb+srv://kartikaggarwal2004:mkSb1EJX16svaJrT@cluster0.6jxu4.mongodb.net/?retryWrites=true&w=majority")
+client = MongoClient(os.getenv("MONGO_URI"))
 db = client.medical_steganography
 patient_collection = db.patients
 
 
 # Cloudinary Configuration
 cloudinary.config(
-    cloud_name="dkbsrsblc",
-    api_key="691958665838133",
-    api_secret="-ZA3LEoVu9lrXQalz-T-ds0SAhE"
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
 
-# Monoalphabetic Substitution Cipher Functions
-
-def generate_substitution_alphabet():
-    """
-    Generates a random monoalphabetic substitution alphabet.
-    """
-    alphabet = string.ascii_lowercase
-    shuffled = list(alphabet)
-    random.shuffle(shuffled)
-    return dict(zip(alphabet, shuffled))
-
-# Initialize the substitution alphabet (this can be saved and reused for decryption)
-substitution_alphabet = generate_substitution_alphabet()
-reverse_substitution_alphabet = {v: k for k, v in substitution_alphabet.items()}
+# Caesar Cipher Configuration
+shift_value = 3  # You can change this value as needed
 
 
-def monoalphabetic_encrypt(text):
-    """
-    Encrypts the given text using a monoalphabetic substitution cipher.
-    """
+# Helper Functions
+def caesar_encrypt(text, shift):
     encrypted_text = []
     for char in text:
         if char.isalpha():
-            char_lower = char.lower()
-            encrypted_char = substitution_alphabet[char_lower]
-            if char.isupper():
-                encrypted_text.append(encrypted_char.upper())
-            else:
-                encrypted_text.append(encrypted_char)
+            shift_base = 65 if char.isupper() else 97
+            encrypted_text.append(chr((ord(char) - shift_base + shift) % 26 + shift_base))
         else:
             encrypted_text.append(char)
     return ''.join(encrypted_text)
 
 
-def monoalphabetic_decrypt(encrypted_text):
-    """
-    Decrypts the given encrypted text using the reverse of the monoalphabetic substitution cipher.
-    """
-    decrypted_text = []
-    for char in encrypted_text:
-        if char.isalpha():
-            char_lower = char.lower()
-            decrypted_char = reverse_substitution_alphabet[char_lower]
-            if char.isupper():
-                decrypted_text.append(decrypted_char.upper())
-            else:
-                decrypted_text.append(decrypted_char)
-        else:
-            decrypted_text.append(char)
-    return ''.join(decrypted_text)
+def caesar_decrypt(encrypted_text, shift):
+    return caesar_encrypt(encrypted_text, -shift)
 
 
 # Steganography Helper Functions (No Change)
@@ -109,6 +76,7 @@ def hide_text_in_image(image_path, text, output_path="stego_image.png"):
 
 
 def retrieve_text_from_image(stego_image_path):
+
     image = Image.open(stego_image_path)
     pixels = np.array(image)
     binary_text = ""
@@ -174,7 +142,7 @@ def hide_data():
     print(file)
     print(patient_id)
 
-    encrypted_data = monoalphabetic_encrypt(patient_data)  # Use Monoalphabetic Substitution Cipher for encryption
+    encrypted_data = caesar_encrypt(patient_data, shift_value)  # Use Caesar Cipher for encryption
     file_path = os.path.join("temp", file.filename)
     file.save(file_path)
 
@@ -201,26 +169,42 @@ def hide_data():
 
 @app.route('/retrieve', methods=['POST'])
 def retrieve_data():
-    patient_id = request.form['patient_id']
-    patient = patient_collection.find_one({"patient_id": patient_id})
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
 
-    if patient:
-        encrypted_data = patient['encrypted_data']
-        file_url = patient['file_url']
-        file_type = patient['file_type']
+    file = request.files['file']
 
-        # Decrypt the data using Monoalphabetic Substitution Cipher
-        decrypted_data = monoalphabetic_decrypt(encrypted_data)
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
 
-        return jsonify({
-            "message": "Data retrieved successfully",
-            "decrypted_data": decrypted_data,
-            "file_url": file_url,
-            "file_type": file_type
-        })
-    else:
-        return jsonify({"error": "Patient not found"}), 404
+    # Secure the filename and save the file temporarily
+    filename = file.filename
+    file_path = os.path.join("temp/", filename)  # Ensure a "temp" folder exists
+    file.save(file_path)
+
+    try:
+        if "image" in file.content_type:  # Check if it's an image
+            encrypted_data = retrieve_text_from_image(file_path)
+        elif "audio" in file.content_type:  # Check if it's an audio file
+            encrypted_data = retrieve_text_from_audio(file_path)
+        else:
+            return jsonify({"error": "Unsupported file type"}), 400
+
+        print(f"Encrypted Data: {encrypted_data}")
+        
+        # Decrypt the extracted data using Caesar Cipher
+        decrypted_data = caesar_decrypt(encrypted_data, shift_value)
+        print(f"Decrypted Data: {decrypted_data}")
+
+        # Clean up the temporary file
+        os.remove(file_path)
+
+        return jsonify({"message": "Data retrieved successfully", "data": decrypted_data})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    os.makedirs("temp", exist_ok=True)
     app.run(debug=True)
