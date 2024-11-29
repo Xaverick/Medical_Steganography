@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
-from cryptography.fernet import Fernet
 import os
 import numpy as np
 from pydub import AudioSegment
@@ -9,10 +8,14 @@ import io
 import wave
 import cloudinary
 import cloudinary.uploader
+from flask_cors import CORS
+import random
+import string
 
 
 # Flask App Configuration
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 
 # MongoDB Configuration
@@ -29,16 +32,63 @@ cloudinary.config(
 )
 
 
-# Encryption Configuration
-encryption_key = Fernet.generate_key()
-cipher_suite = Fernet(encryption_key)
+# Monoalphabetic Substitution Cipher Functions
+
+def generate_substitution_alphabet():
+    """
+    Generates a random monoalphabetic substitution alphabet.
+    """
+    alphabet = string.ascii_lowercase
+    shuffled = list(alphabet)
+    random.shuffle(shuffled)
+    return dict(zip(alphabet, shuffled))
+
+# Initialize the substitution alphabet (this can be saved and reused for decryption)
+substitution_alphabet = generate_substitution_alphabet()
+reverse_substitution_alphabet = {v: k for k, v in substitution_alphabet.items()}
 
 
-# Helper Functions
+def monoalphabetic_encrypt(text):
+    """
+    Encrypts the given text using a monoalphabetic substitution cipher.
+    """
+    encrypted_text = []
+    for char in text:
+        if char.isalpha():
+            char_lower = char.lower()
+            encrypted_char = substitution_alphabet[char_lower]
+            if char.isupper():
+                encrypted_text.append(encrypted_char.upper())
+            else:
+                encrypted_text.append(encrypted_char)
+        else:
+            encrypted_text.append(char)
+    return ''.join(encrypted_text)
+
+
+def monoalphabetic_decrypt(encrypted_text):
+    """
+    Decrypts the given encrypted text using the reverse of the monoalphabetic substitution cipher.
+    """
+    decrypted_text = []
+    for char in encrypted_text:
+        if char.isalpha():
+            char_lower = char.lower()
+            decrypted_char = reverse_substitution_alphabet[char_lower]
+            if char.isupper():
+                decrypted_text.append(decrypted_char.upper())
+            else:
+                decrypted_text.append(decrypted_char)
+        else:
+            decrypted_text.append(char)
+    return ''.join(decrypted_text)
+
+
+# Steganography Helper Functions (No Change)
 def hide_text_in_image(image_path, text, output_path="stego_image.png"):
     image = Image.open(image_path)
     pixels = np.array(image)
-    binary_text = ''.join(format(ord(char), '08b') for char in text) + '1111111111111110'
+    binary_text = ''.join(format(ord(char), '08b') for char in text) + '11111110'
 
     if len(binary_text) > pixels.size:
         raise ValueError("Text too long to hide in this image.")
@@ -80,13 +130,13 @@ def retrieve_text_from_image(stego_image_path):
 def hide_text_in_audio(audio_path, message, output_audio_path="stego_audio.wav"):
     audio = AudioSegment.from_file(audio_path, format="wav")
     audio_data = np.array(audio.get_array_of_samples(), dtype=np.int16)
-    binary_message = ''.join(format(ord(char), '08b') for char in message) + '1111111111111110'
+    binary_message = ''.join(format(ord(char), '08b') for char in message) + '11111110'
 
     if len(binary_message) > len(audio_data):
         raise ValueError("Message is too long to hide in the audio.")
 
     for i in range(len(binary_message)):
-        audio_data[i] = (audio_data[i] & 0xFFFE) | int(binary_message[i])
+        audio_data[i] = (audio_data[i] & 0b111111111111110) | int(binary_message[i])
 
     stego_audio = AudioSegment(
         audio_data.tobytes(),
@@ -112,22 +162,26 @@ def retrieve_text_from_audio(stego_audio_path):
         if byte == "11111110":
             break
         message += chr(int(byte, 2))
+    print(message)
     return message
+
 
 @app.route('/hide', methods=['POST'])
 def hide_data():
     file = request.files['file']
     patient_id = request.form['patient_id']
     patient_data = request.form['data']
+    print(file)
+    print(patient_id)
 
-    encrypted_data = cipher_suite.encrypt(patient_data.encode())
+    encrypted_data = monoalphabetic_encrypt(patient_data)  # Use Monoalphabetic Substitution Cipher for encryption
     file_path = os.path.join("temp", file.filename)
     file.save(file_path)
 
     if file.mimetype.startswith('image/'):
-        stego_path = hide_text_in_image(file_path, encrypted_data.decode())
+        stego_path = hide_text_in_image(file_path, encrypted_data)
     elif file.mimetype.startswith('audio/'):
-        stego_path = hide_text_in_audio(file_path, encrypted_data.decode())
+        stego_path = hide_text_in_audio(file_path, encrypted_data)
     else:
         return jsonify({"error": "Unsupported file type"}), 400
 
@@ -137,30 +191,36 @@ def hide_data():
 
     patient_collection.insert_one({
         "patient_id": patient_id,
-        "encrypted_data": encrypted_data.decode(),
+        "encrypted_data": encrypted_data,
         "file_url": upload_result["secure_url"],
         "file_type": file.mimetype.split('/')[0]
     })
 
     return jsonify({"message": "Data hidden successfully", "file_url": upload_result["secure_url"]})
 
+
 @app.route('/retrieve', methods=['POST'])
 def retrieve_data():
-    file_url = request.json['file_url']
-    file_path = cloudinary.utils.download_private(file_url)
+    patient_id = request.form['patient_id']
+    patient = patient_collection.find_one({"patient_id": patient_id})
 
-    if "image" in file_url:
-        encrypted_data = retrieve_text_from_image(file_path)
-    elif "audio" in file_url:
-        encrypted_data = retrieve_text_from_audio(file_path)
+    if patient:
+        encrypted_data = patient['encrypted_data']
+        file_url = patient['file_url']
+        file_type = patient['file_type']
+
+        # Decrypt the data using Monoalphabetic Substitution Cipher
+        decrypted_data = monoalphabetic_decrypt(encrypted_data)
+
+        return jsonify({
+            "message": "Data retrieved successfully",
+            "decrypted_data": decrypted_data,
+            "file_url": file_url,
+            "file_type": file_type
+        })
     else:
-        return jsonify({"error": "Unsupported file type"}), 400
+        return jsonify({"error": "Patient not found"}), 404
 
-    decrypted_data = cipher_suite.decrypt(encrypted_data.encode()).decode()
-    os.remove(file_path)
 
-    return jsonify({"message": "Data retrieved successfully", "data": decrypted_data})
-
-if __name__ == '__main__':
-    os.makedirs("temp", exist_ok=True)
+if __name__ == "__main__":
     app.run(debug=True)
