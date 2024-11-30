@@ -10,6 +10,8 @@ import cloudinary
 import cloudinary.uploader
 from flask_cors import CORS
 from dotenv import load_dotenv
+import random
+import string
 
 load_dotenv()
 # Flask App Configuration
@@ -31,24 +33,50 @@ cloudinary.config(
 )
 
 
-# Caesar Cipher Configuration
-shift_value = 3  # You can change this value as needed
-
-
-# Helper Functions
-def caesar_encrypt(text, shift):
+# Monoalphabetic Substitution Cipher Functions
+def generate_substitution_alphabet():
+    """
+    Generates a random monoalphabetic substitution alphabet.
+    """
+    alphabet = string.ascii_lowercase
+    shuffled = list(alphabet)
+    random.shuffle(shuffled)
+    return dict(zip(alphabet, shuffled))
+# Initialize the substitution alphabet (this can be saved and reused for decryption)
+substitution_alphabet = generate_substitution_alphabet()
+reverse_substitution_alphabet = {v: k for k, v in substitution_alphabet.items()}
+def monoalphabetic_encrypt(text):
+    """
+    Encrypts the given text using a monoalphabetic substitution cipher.
+    """
     encrypted_text = []
     for char in text:
         if char.isalpha():
-            shift_base = 65 if char.isupper() else 97
-            encrypted_text.append(chr((ord(char) - shift_base + shift) % 26 + shift_base))
+            char_lower = char.lower()
+            encrypted_char = substitution_alphabet[char_lower]
+            if char.isupper():
+                encrypted_text.append(encrypted_char.upper())
+            else:
+                encrypted_text.append(encrypted_char)
         else:
             encrypted_text.append(char)
     return ''.join(encrypted_text)
-
-
-def caesar_decrypt(encrypted_text, shift):
-    return caesar_encrypt(encrypted_text, -shift)
+def monoalphabetic_decrypt(encrypted_text):
+    """
+    Decrypts the given encrypted text using the reverse of the monoalphabetic substitution cipher.
+    """
+    decrypted_text = []
+    for char in encrypted_text:
+        if char.isalpha():
+            char_lower = char.lower()
+            decrypted_char = reverse_substitution_alphabet[char_lower]
+            if char.isupper():
+                decrypted_text.append(decrypted_char.upper())
+            else:
+                decrypted_text.append(decrypted_char)
+        else:
+            decrypted_text.append(char)
+    return ''.join(decrypted_text)
 
 
 # Steganography Helper Functions (No Change)
@@ -142,7 +170,7 @@ def hide_data():
     print(file)
     print(patient_id)
 
-    encrypted_data = caesar_encrypt(patient_data, shift_value)  # Use Caesar Cipher for encryption
+    encrypted_data = monoalphabetic_encrypt(patient_data)  # Use Caesar Cipher for encryption
     file_path = os.path.join("temp", file.filename)
     file.save(file_path)
 
@@ -193,7 +221,7 @@ def retrieve_data():
         print(f"Encrypted Data: {encrypted_data}")
         
         # Decrypt the extracted data using Caesar Cipher
-        decrypted_data = caesar_decrypt(encrypted_data, shift_value)
+        decrypted_data = monoalphabetic_decrypt(encrypted_data)
         print(f"Decrypted Data: {decrypted_data}")
 
         # Clean up the temporary file
